@@ -7,9 +7,6 @@ import requests
 import schedule
 from flask import Flask
 
-# ==========================================
-# YOUR CRITICAL TELEGRAM INFO (ALREADY INJECTED)
-# ==========================================
 TELEGRAM_TOKEN = "7957358025:AAEjbL5WLHIDf5jHRMuAtstev5_8Si4l4Ts"
 TELEGRAM_CHAT_ID = "8445672811"
 GOLD_TICKER = "GC=F"
@@ -21,13 +18,17 @@ def home():
     return "Gold Signal Bot Status: Active and Running 24/7!"
 
 def run_analysis_and_send():
+    print("LOG: Fetching new gold market data...")
     try:
-        ticker = yf.Ticker(GOLD_TICKER)
-        df = ticker.history(period="5d", interval="1h")
+        # Pulling data using download method to ensure maximum stability
+        df = yf.download(tickers=GOLD_TICKER, period="5d", interval="1h")
         
         if df.empty:
+            print("LOG WARNING: Retrieved market dataset is empty.")
             return
             
+        print(f"LOG: Successfully pulled data. Total rows: {len(df)}")
+        
         # Strategy Metrics
         df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
         df['EMA50'] = df['Close'].ewm(span=50, adjust=False).mean()
@@ -40,11 +41,11 @@ def run_analysis_and_send():
         df['Vol_Avg'] = df['Volume'].rolling(window=10).mean()
         
         current_candle = df.iloc[-1]
-        ema20 = current_candle['EMA20']
-        ema50 = current_candle['EMA50']
-        rsi = current_candle['RSI']
-        volume = current_candle['Volume']
-        vol_avg = current_candle['Vol_Avg']
+        ema20 = current_candle['EMA20'].item()
+        ema50 = current_candle['EMA50'].item()
+        rsi = current_candle['RSI'].item()
+        volume = current_candle['Volume'].item()
+        vol_avg = current_candle['Vol_Avg'].item()
         
         trend = "Bullish" if ema20 > ema50 else "Bearish"
         volume_spike = volume > (vol_avg * 1.5)
@@ -62,23 +63,26 @@ def run_analysis_and_send():
             forecast += " (High Volatility Spike)"
 
         output_message = (
-            f"⚡ Gold Market Analyzer:\n"
+            f"⚡ Gold Market Analyzer Update:\n"
             f"Trend: {trend}\n"
+            f"RSI: {round(rsi, 2)}\n"
             f"Next Hour Forecast: {forecast}"
         )
         
+        print("LOG: Sending message to Telegram...")
         url = f"https://api.telegram.com/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": output_message})
+        response = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": output_message})
+        print(f"LOG: Telegram API Response: {response.status_code} - {response.text}")
         
     except Exception as e:
-        url = f"https://api.telegram.com/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": f"Error: {str(e)}"})
+        print(f"LOG CRITICAL ERROR: {str(e)}")
 
 # Triggers precisely on the hour mark (:00)
 schedule.every().hour.at(":00").do(run_analysis_and_send)
 
 def run_scheduler():
-    # Sends a test signal immediately upon server launch
+    print("LOG: Initializing automated engine thread...")
+    time.sleep(5)  # Wait for server framework initialization
     run_analysis_and_send()
     while True:
         schedule.run_pending()
