@@ -11,13 +11,9 @@ from flask import Flask
 TELEGRAM_TOKEN = "7957358025:AAEjbL5WLHIDf5jHRMuAtstev5_8Si4l4Ts"
 TELEGRAM_CHAT_ID = "8445672811"
 ALPHA_VANTAGE_KEY = "BHBXJXJQC4XOR8PE"
-SYMBOL = "GLD"  # SPDR Gold Shares (Highly accurate tracking for spot gold)
+SYMBOL = "GLD"
 
 app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Gold Strategy Bot Status: Active and Running 24/7!"
 
 def run_analysis_and_send():
     print("LOG: Fetching official market data from Alpha Vantage...")
@@ -25,26 +21,24 @@ def run_analysis_and_send():
         url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={SYMBOL}&apikey={ALPHA_VANTAGE_KEY}"
         response = requests.get(url).json()
         
-        # Check if the API threw an information or rate limit note
         if "Time Series (Daily)" not in response:
-            print(f"LOG WARNING: API response format invalid. Response: {response}")
-            return
+            error_msg = f"LOG WARNING: API key restriction or response invalid. Output: {response}"
+            print(error_msg)
+            return error_msg
             
         daily_data = response["Time Series (Daily)"]
         dates = sorted(list(daily_data.keys()), reverse=True)
         
         if len(dates) < 2:
-            print("LOG WARNING: Insufficient market history fetched.")
-            return
+            print("LOG WARNING: Insufficient history.")
+            return "Error: Insufficient history"
 
-        # Fetch pricing variables
         today_date = dates[0]
         yesterday_date = dates[1]
         
         today_close = float(daily_data[today_date]["4. close"])
         yesterday_close = float(daily_data[yesterday_date]["4. close"])
         
-        # Strategy Metrics (Daily Price Action Drift Analysis)
         price_change = today_close - yesterday_close
         pct_change = (price_change / yesterday_close) * 100
         
@@ -56,7 +50,7 @@ def run_analysis_and_send():
             forecast = "Downward expansion continuing. Keep defensive targets close."
         else:
             trend = "Consolidating Range"
-            forecast = "Neutral compression structure. Market waiting for key volume breakouts."
+            forecast = "Neutral compression structure. Market waiting for key breakouts."
 
         output_message = (
             f"⚡ Gold Market Strategy Report:\n\n"
@@ -70,17 +64,27 @@ def run_analysis_and_send():
         print("LOG: Delivering data array package to Telegram...")
         telegram_url = f"https://api.telegram.com/bot{TELEGRAM_TOKEN}/sendMessage"
         res = requests.post(telegram_url, json={"chat_id": TELEGRAM_CHAT_ID, "text": output_message})
-        print(f"LOG: Telegram Gateway Response: {res.status_code}")
+        
+        log_line = f"LOG: Telegram Gateway Response Code: {res.status_code} - Text: {res.text}"
+        print(log_line)
+        return f"Signal processed completely! API Response: {res.status_code}"
         
     except Exception as e:
-        print(f"LOG CRITICAL ERROR: {str(e)}")
+        err = f"LOG CRITICAL ERROR: {str(e)}"
+        print(err)
+        return err
+
+# Visiting the URL now directly triggers the strategy calculation!
+@app.route('/')
+def home():
+    status = run_analysis_and_send()
+    return f"<h3>Gold Bot Framework Interface</h3><p>{status}</p>"
 
 schedule.every().hour.at(":00").do(run_analysis_and_send)
 
 def run_scheduler():
     print("LOG: Initializing background scheduling thread...")
     time.sleep(5)
-    run_analysis_and_send()
     while True:
         schedule.run_pending()
         time.sleep(1)
