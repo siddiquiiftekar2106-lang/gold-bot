@@ -1,94 +1,90 @@
 import os
 import time
 import threading
-import pandas as pd
-import yfinance as yf
 import requests
 import schedule
 from flask import Flask
 
+# ==========================================
+# CONFIGURATION & RECOVERY PARAMETERS
+# ==========================================
 TELEGRAM_TOKEN = "7957358025:AAEjbL5WLHIDf5jHRMuAtstev5_8Si4l4Ts"
 TELEGRAM_CHAT_ID = "8445672811"
-GOLD_TICKER = "GC=F"
+ALPHA_VANTAGE_KEY = "BHBXJXJQC4XOR8PE"
+SYMBOL = "GLD"  # SPDR Gold Shares (Highly accurate tracking for spot gold)
 
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Gold Signal Bot Status: Active and Running 24/7!"
+    return "Gold Strategy Bot Status: Active and Running 24/7!"
 
 def run_analysis_and_send():
-    print("LOG: Fetching new gold market data...")
+    print("LOG: Fetching official market data from Alpha Vantage...")
     try:
-        # Pulling data using download method to ensure maximum stability
-        df = yf.download(tickers=GOLD_TICKER, period="5d", interval="1h")
+        url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={SYMBOL}&apikey={ALPHA_VANTAGE_KEY}"
+        response = requests.get(url).json()
         
-        if df.empty:
-            print("LOG WARNING: Retrieved market dataset is empty.")
+        # Check if the API threw an information or rate limit note
+        if "Time Series (Daily)" not in response:
+            print(f"LOG WARNING: API response format invalid. Response: {response}")
             return
             
-        print(f"LOG: Successfully pulled data. Total rows: {len(df)}")
+        daily_data = response["Time Series (Daily)"]
+        dates = sorted(list(daily_data.keys()), reverse=True)
         
-        # Strategy Metrics
-        df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
-        df['EMA50'] = df['Close'].ewm(span=50, adjust=False).mean()
+        if len(dates) < 2:
+            print("LOG WARNING: Insufficient market history fetched.")
+            return
+
+        # Fetch pricing variables
+        today_date = dates[0]
+        yesterday_date = dates[1]
         
-        delta = df['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        df['RSI'] = 100 - (100 / (1 + rs))
-        df['Vol_Avg'] = df['Volume'].rolling(window=10).mean()
+        today_close = float(daily_data[today_date]["4. close"])
+        yesterday_close = float(daily_data[yesterday_date]["4. close"])
         
-        current_candle = df.iloc[-1]
-        ema20 = current_candle['EMA20'].item()
-        ema50 = current_candle['EMA50'].item()
-        rsi = current_candle['RSI'].item()
-        volume = current_candle['Volume'].item()
-        vol_avg = current_candle['Vol_Avg'].item()
+        # Strategy Metrics (Daily Price Action Drift Analysis)
+        price_change = today_close - yesterday_close
+        pct_change = (price_change / yesterday_close) * 100
         
-        trend = "Bullish" if ema20 > ema50 else "Bearish"
-        volume_spike = volume > (vol_avg * 1.5)
-        
-        if ema20 > ema50 and rsi > 55:
-            forecast = "Continuation likely"
-        elif ema20 < ema50 and rsi < 45:
-            forecast = "Continuation likely"
-        elif (trend == "Bullish" and rsi > 70) or (trend == "Bearish" and rsi < 30):
-            forecast = "Possible reversal zone"
+        if pct_change > 0.4:
+            trend = "Bullish Momentum"
+            forecast = "Upward continuation likely. Bulls dominating daily volume bounds."
+        elif pct_change < -0.4:
+            trend = "Bearish Shift"
+            forecast = "Downward expansion continuing. Keep defensive targets close."
         else:
-            forecast = "Consolidation / Neutral"
-            
-        if volume_spike:
-            forecast += " (High Volatility Spike)"
+            trend = "Consolidating Range"
+            forecast = "Neutral compression structure. Market waiting for key volume breakouts."
 
         output_message = (
-            f"⚡ Gold Market Analyzer Update:\n"
-            f"Trend: {trend}\n"
-            f"RSI: {round(rsi, 2)}\n"
-            f"Next Hour Forecast: {forecast}"
+            f"⚡ Gold Market Strategy Report:\n\n"
+            f"Asset Tracker: {SYMBOL} (Gold Shares)\n"
+            f"Current Close: ${round(today_close, 2)}\n"
+            f"Daily Change: {round(pct_change, 2)}%\n"
+            f"Current Core Trend: {trend}\n"
+            f"Strategic Forecast: {forecast}"
         )
         
-        print("LOG: Sending message to Telegram...")
-        url = f"https://api.telegram.com/bot{TELEGRAM_TOKEN}/sendMessage"
-        response = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": output_message})
-        print(f"LOG: Telegram API Response: {response.status_code} - {response.text}")
+        print("LOG: Delivering data array package to Telegram...")
+        telegram_url = f"https://api.telegram.com/bot{TELEGRAM_TOKEN}/sendMessage"
+        res = requests.post(telegram_url, json={"chat_id": TELEGRAM_CHAT_ID, "text": output_message})
+        print(f"LOG: Telegram Gateway Response: {res.status_code}")
         
     except Exception as e:
         print(f"LOG CRITICAL ERROR: {str(e)}")
 
-# Triggers precisely on the hour mark (:00)
 schedule.every().hour.at(":00").do(run_analysis_and_send)
 
 def run_scheduler():
-    print("LOG: Initializing automated engine thread...")
-    time.sleep(5)  # Wait for server framework initialization
+    print("LOG: Initializing background scheduling thread...")
+    time.sleep(5)
     run_analysis_and_send()
     while True:
         schedule.run_pending()
         time.sleep(1)
 
-# Runs automation on a separate internal background server thread
 threading.Thread(target=run_scheduler, daemon=True).start()
 
 if __name__ == "__main__":
