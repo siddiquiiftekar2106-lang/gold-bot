@@ -74,7 +74,6 @@ def run_analysis_and_send():
         print(err)
         return err
 
-# Visiting the URL now directly triggers the strategy calculation!
 @app.route('/')
 def home():
     status = run_analysis_and_send()
