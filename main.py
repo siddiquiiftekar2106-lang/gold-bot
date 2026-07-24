@@ -1,94 +1,137 @@
 import os
-import time
-import threading
-import requests
-import schedule
-from flask import Flask
+import yfinance as yf
+import pandas as pd
+import ta
+from flask import Flask, request
+from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Dispatcher, CommandHandler, CallbackQueryHandler
 
-# ==========================================
-# CONFIGURATION & RECOVERY PARAMETERS
-# ==========================================
+# Credentials
 TELEGRAM_TOKEN = "7957358025:AAEjbL5WLHIDf5jHRMuAtstev5_8Si4l4Ts"
-TELEGRAM_CHAT_ID = "8445672811"
-ALPHA_VANTAGE_KEY = "BHBXJXJQC4XOR8PE"
-SYMBOL = "GLD"
+SYMBOL = "GC=F"  # Gold Futures live tick tracker
 
 app = Flask(__name__)
+bot = Bot(token=TELEGRAM_TOKEN)
 
-def run_analysis_and_send():
-    print("LOG: Fetching official market data from Alpha Vantage...")
+def generate_gold_signal():
+    """Fetches live market data and calculates technical indicators."""
     try:
-        url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={SYMBOL}&apikey={ALPHA_VANTAGE_KEY}"
-        response = requests.get(url).json()
+        gold = yf.Ticker(SYMBOL)
+        df = gold.history(period="5d", interval="15m")
         
-        if "Time Series (Daily)" not in response:
-            error_msg = f"LOG WARNING: API key restriction or response invalid. Output: {response}"
-            print(error_msg)
-            return error_msg
-            
-        daily_data = response["Time Series (Daily)"]
-        dates = sorted(list(daily_data.keys()), reverse=True)
-        
-        if len(dates) < 2:
-            print("LOG WARNING: Insufficient history.")
-            return "Error: Insufficient history"
+        if len(df) < 50:
+            return "⚠️ Market closed or insufficient tick data available right now."
 
-        today_date = dates[0]
-        yesterday_date = dates[1]
-        
-        today_close = float(daily_data[today_date]["4. close"])
-        yesterday_close = float(daily_data[yesterday_date]["4. close"])
-        
-        price_change = today_close - yesterday_close
-        pct_change = (price_change / yesterday_close) * 100
-        
-        if pct_change > 0.4:
-            trend = "Bullish Momentum"
-            forecast = "Upward continuation likely. Bulls dominating daily volume bounds."
-        elif pct_change < -0.4:
-            trend = "Bearish Shift"
-            forecast = "Downward expansion continuing. Keep defensive targets close."
+        # Technical Indicators
+        df['EMA_20'] = ta.trend.ema_indicator(df['Close'], window=20)
+        df['EMA_50'] = ta.trend.ema_indicator(df['Close'], window=50)
+        df['RSI'] = ta.momentum.rsi(df['Close'], window=14)
+        df['ATR'] = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'], window=14)
+
+        current_price = df['Close'].iloc[-1]
+        ema_20 = df['EMA_20'].iloc[-1]
+        ema_50 = df['EMA_50'].iloc[-1]
+        rsi = df['RSI'].iloc[-1]
+        atr = df['ATR'].iloc[-1]
+
+        # Signal Logic Architecture
+        if current_price > ema_20 and ema_20 > ema_50 and rsi < 65:
+            signal = "🟢 STRONG BUY"
+            sl = current_price - (1.5 * atr)
+            tp1 = current_price + (1.5 * atr)
+            tp2 = current_price + (3.0 * atr)
+            reason = "Bullish EMA Alignment (20 > 50) + Healthy RSI Momentum"
+        elif current_price < ema_20 and ema_20 < ema_50 and rsi > 35:
+            signal = "🔴 STRONG SELL"
+            sl = current_price + (1.5 * atr)
+            tp1 = current_price - (1.5 * atr)
+            tp2 = current_price - (3.0 * atr)
+            reason = "Bearish EMA Cross (20 < 50) + Downward Pressure"
         else:
-            trend = "Consolidating Range"
-            forecast = "Neutral compression structure. Market waiting for key breakouts."
+            signal = "⚪ NO TRADE (HOLD)"
+            sl = 0
+            tp1 = 0
+            tp2 = 0
+            reason = "Market in choppy consolidation zone. Wait for clean breakout."
 
-        output_message = (
-            f"⚡ Gold Market Strategy Report:\n\n"
-            f"Asset Tracker: {SYMBOL} (Gold Shares)\n"
-            f"Current Close: ${round(today_close, 2)}\n"
-            f"Daily Change: {round(pct_change, 2)}%\n"
-            f"Current Core Trend: {trend}\n"
-            f"Strategic Forecast: {forecast}"
-        )
-        
-        print("LOG: Delivering data array package to Telegram...")
-        telegram_url = f"https://api.telegram.com/bot{TELEGRAM_TOKEN}/sendMessage"
-        res = requests.post(telegram_url, json={"chat_id": TELEGRAM_CHAT_ID, "text": output_message})
-        
-        log_line = f"LOG: Telegram Gateway Response Code: {res.status_code} - Text: {res.text}"
-        print(log_line)
-        return f"Signal processed completely! API Response: {res.status_code}"
-        
+        # Build Response Card
+        msg = f"⚡ *XAU/USD (GOLD) REAL-TIME ANALYSIS*\n\n"
+        msg += f"💰 *Current Spot Price:* `${current_price:.2f}`\n"
+        msg += f"📊 *Signal:* *{signal}*\n\n"
+        msg += f"🔍 *Technical Context:* {reason}\n"
+        msg += f"• *RSI (14):* `{rsi:.1f}`\n"
+        msg += f"• *EMA 20 / 50:* `${ema_20:.2f}` / `${ema_50:.2f}`\n\n"
+
+        if "BUY" in signal or "SELL" in signal:
+            msg += f"🎯 *SUGGESTED TRADE PARAMETERS:*\n"
+            msg += f"• *Entry:* `${current_price:.2f}`\n"
+            msg += f"• *Stop Loss (SL):* `${sl:.2f}`\n"
+            msg += f"• *Take Profit 1 (TP1):* `${tp1:.2f}`\n"
+            msg += f"• *Take Profit 2 (TP2):* `${tp2:.2f}`\n"
+
+        return msg
     except Exception as e:
-        err = f"LOG CRITICAL ERROR: {str(e)}"
-        print(err)
-        return err
+        return f"❌ Error generating signal: {str(e)}"
 
-@app.route('/')
-def home():
-    status = run_analysis_and_send()
-    return f"<h3>Gold Bot Framework Interface</h3><p>{status}</p>"
+def get_keyboard():
+    """Generates the 1-Click Interactive Mobile Menu."""
+    keyboard = [
+        [InlineKeyboardButton("⚡ Get Instant Signal ⚡", callback_data="get_signal")],
+        [InlineKeyboardButton("📈 Live Gold Price", callback_data="get_price")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
-schedule.every().hour.at(":00").do(run_analysis_and_send)
+# Telegram Bot Handlers
+def start(update, context):
+    update.message.reply_text(
+        "👋 **Welcome to your Gold Signal Console!**\n\nTap the button below at any time to generate an instant signal on live market prices.",
+        reply_markup=get_keyboard(),
+        parse_mode="Markdown"
+    )
 
-def run_scheduler():
-    print("LOG: Initializing background scheduling thread...")
-    time.sleep(5)
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
+def button_click(update, context):
+    query = update.callback_query
+    query.answer()
+    
+    if query.data == "get_signal":
+        query.edit_message_text("⏳ *Calculating live indicators...*", parse_mode="Markdown")
+        signal_card = generate_gold_signal()
+        query.edit_message_text(text=signal_card, reply_markup=get_keyboard(), parse_mode="Markdown")
+    elif query.data == "get_price":
+        try:
+            gold = yf.Ticker(SYMBOL)
+            price = gold.history(period="1d")['Close'].iloc[-1]
+            query.edit_message_text(
+                text=f"📊 **Current Gold Price (XAU/USD):** `${price:.2f}`",
+                reply_markup=get_keyboard(),
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            query.edit_message_text("❌ Could not fetch price.", reply_markup=get_keyboard())
 
-threading.Thread(target=run_scheduler, daemon=True).start()
+# Flask Routing for Webhooks
+@app.route('/', methods=['GET'])
+def index():
+    return "<h3>Gold Signal Console Active 🚀</h3>"
+
+@app.route('/' + TELEGRAM_TOKEN, methods=['POST'])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), bot)
+    dispatcher.process_update(update)
+    return 'ok'
+
+# Setup Bot Dispatcher
+dispatcher = Dispatcher(bot, None, workers=0)
+dispatcher.add_handler(CommandHandler('start', start))
+dispatcher.add_handler(CallbackQueryHandler(button_click))
+
+# Automatically configure webhook when server starts
+try:
+    webhook_url = f"https://gold-bot-f5mi.onrender.com/{TELEGRAM_TOKEN}"
+    bot.set_webhook(url=webhook_url)
+    print("LOG: Webhook registered with Telegram successfully!")
+except Exception as e:
+    print(f"LOG ERROR: {str(e)}")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
